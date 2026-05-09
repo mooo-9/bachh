@@ -1,0 +1,1745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HR Bias Detection System</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚖</text></svg>" />
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            navy: { 950: '#0f172a', 900: '#0f1f3d', 800: '#1e293b' }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- React 18 -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+  <!-- Babel Standalone (JSX transform) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Chart.js 4 -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; }
+    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    .tooltip-container { position: relative; display: inline; }
+    .tooltip-container .tooltip-text { visibility: hidden; background: #1e293b; color: #fff;
+      text-align: left; padding: 6px 10px; border-radius: 6px; font-size: 12px; max-width: 240px;
+      position: absolute; z-index: 100; bottom: 125%; left: 50%; transform: translateX(-50%);
+      white-space: normal; line-height: 1.5; }
+    .tooltip-container:hover .tooltip-text { visibility: visible; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo } = React;
+
+    // ══════════════════════════════════════════════
+    // CONSTANTS
+    // ══════════════════════════════════════════════
+
+    const BIAS_DICT = {
+      gendered_female: {
+        words: ['emotional', 'warm', 'nurturing', 'bossy', 'difficult', 'aggressive',
+                'hysterical', 'moody', 'feisty', 'abrasive', 'shrill', 'passive'],
+        color: '#fecaca',
+        borderColor: '#ef4444',
+        label: 'Gendered language',
+        explanation: 'This term is disproportionately applied to women in performance reviews and reflects implicit gender bias rather than objective performance assessment.',
+      },
+      personality_focus: {
+        words: ['personality', 'attitude', 'likeable', 'pleasant', 'unlikeable',
+                'arrogant', 'humble', 'rude', 'charming'],
+        color: '#fed7aa',
+        borderColor: '#f97316',
+        label: 'Personality-focused',
+        explanation: 'Performance reviews should assess skills and outcomes, not personality traits. Personality-focused language introduces subjectivity and is often applied unevenly across demographic groups.',
+      },
+      vague_language: {
+        words: ['sometimes', 'could try', 'needs to work on', 'not always',
+                'occasionally', 'tries to', 'should consider', 'lacks', 'at times'],
+        color: '#fef08a',
+        borderColor: '#eab308',
+        label: 'Vague language',
+        explanation: 'Vague feedback is harder to act on and is applied disproportionately to underrepresented groups. Specific, evidence-based feedback is fairer and more actionable.',
+      },
+      recency_bias: {
+        words: ['recently', 'lately', 'last month', 'this quarter', 'just', 'these days'],
+        color: '#e9d5ff',
+        borderColor: '#a855f7',
+        label: 'Recency bias',
+        explanation: 'Overweighting recent events ignores overall performance across the full review period and can unfairly penalise or reward employees based on a single incident.',
+      },
+    };
+
+    const POSITIVE_WORDS = [
+      'excellent', 'outstanding', 'exceptional', 'strong', 'effective', 'successful',
+      'achieved', 'delivered', 'exceeded', 'reliable', 'consistent', 'proactive',
+      'innovative', 'efficient', 'professional', 'dedicated', 'skilled', 'talented',
+      'capable', 'impressive', 'thorough', 'precise', 'strategic', 'collaborative',
+      'supportive', 'accomplished', 'exemplary', 'commendable', 'valuable', 'dependable',
+      'creative', 'analytical', 'motivated', 'resourceful', 'productive', 'responsive',
+      'focused', 'diligent', 'constructive', 'high-quality', 'measurable', 'significant',
+      'improved', 'advanced', 'positive', 'built', 'led', 'drove',
+      'increased', 'reduced', 'surpassed', 'mentored', 'architected', 'deployed',
+    ];
+
+    const NEGATIVE_WORDS = [
+      'poor', 'failed', 'missed', 'below', 'lacking', 'inconsistent', 'delayed',
+      'errors', 'issues', 'problems', 'struggles', 'difficult', 'inadequate',
+      'unsatisfactory', 'weak', 'incomplete', 'declining', 'subpar', 'disappointing',
+      'concerning', 'ineffective', 'disorganized', 'unreliable', 'unprofessional',
+      'negligent', 'careless', 'reactive', 'slow', 'behind', 'deficit', 'shortfall',
+      'gap', 'deficient', 'unclear', 'confused', 'disruptive', 'confrontational',
+      'resistant', 'avoids', 'neglects', 'ignores', 'fails', 'unable', 'unwilling',
+      'lacks', 'low', 'minimal', 'negative', 'tension', 'concern', 'required',
+    ];
+
+    const DEBIAS_MAP = {
+      'emotional':          'expressive under pressure',
+      'warm':               'collaborative and approachable',
+      'nurturing':          'supportive of team members',
+      'bossy':              'direct in communication',
+      'difficult':          'direct with opinions',
+      'aggressive':         'assertive and driven',
+      'hysterical':         'passionate about outcomes',
+      'moody':              'shows variable engagement',
+      'feisty':             'confident and vocal',
+      'abrasive':           'candid in feedback',
+      'shrill':             'vocal',
+      'passive':            'measured in approach',
+      'personality':        'professional style',
+      'attitude':           'professional conduct',
+      'likeable':           'well-regarded by peers',
+      'pleasant':           'approachable and collaborative',
+      'arrogant':           'highly self-assured',
+      'charming':           'engaging communicator',
+      'needs to work on':   'has an opportunity to develop',
+      'could try':          'can focus on strengthening',
+      'not always':         'is developing consistency in',
+      'lacks':              'is building capability in',
+      'sometimes':          'at certain times',
+      'occasionally':       'in some situations',
+      'tries to':           'is working toward',
+      'should consider':    'would benefit from',
+      'at times':           'in some situations',
+    };
+
+    const FEEDBACK_CATEGORIES = {
+      Strengths:    ['delivered', 'achieved', 'exceeded', 'strong', 'excellent', 'outstanding',
+                     'built', 'led', 'drove', 'created', 'improved', 'increased', 'reduced',
+                     'successful', 'effective', 'surpassed', 'accomplished', 'exceptional'],
+      Weaknesses:   ['missed', 'failed', 'poor', 'below', 'needs', 'lacks', 'struggles',
+                     'inconsistent', 'delayed', 'error', 'issues', 'concerns', 'improvement',
+                     'disappointing', 'subpar', 'unable', 'weak'],
+      Leadership:   ['led', 'mentored', 'managed', 'coordinated', 'directed', 'guided',
+                     'supervised', 'influenced', 'inspired', 'team', 'stakeholder', 'architected',
+                     'onboarded', 'coached'],
+      Development:  ['develop', 'improve', 'growth', 'training', 'learning', 'opportunity',
+                     'potential', 'focus', 'career', 'skills', 'work on', 'should consider'],
+    };
+
+    const DEPARTMENTS = ['Engineering', 'Sales', 'Marketing', 'Finance', 'Operations'];
+    const GENDERS     = ['Male', 'Female', 'Non-binary'];
+    const ETHNICITIES = ['White', 'Black', 'Hispanic', 'Asian', 'Middle Eastern'];
+    const AGE_GROUPS  = ['20-30', '31-40', '41-50', '51+'];
+    const EVALUATORS  = ['MGR-A', 'MGR-B', 'MGR-C'];
+    const DEFAULT_KPI_SCORES = { tenureScore: 0.6, kpiScore: 0.6, peerScore: 0.6 };
+    // ══════════════════════════════════════════════
+    // SEED DATA — 50 evaluation records (raw, no computed fields)
+    // MGR-A: lenient (rates +0.8–2.2 above predicted)
+    // MGR-B: harsh   (rates −1.0–2.6 below predicted)
+    // MGR-C: gender-biased (female employees rated 1.5–2 below predicted; male 0.1–1.3 above)
+    // ══════════════════════════════════════════════
+
+    const SEED_DATA = [
+      // ── MGR-A (lenient) — 17 records ──
+      { id:'E001', employeeId:'EMP-001', department:'Engineering', evaluatorId:'MGR-A', rating:4, gender:'Male',       ethnicity:'White',          ageGroup:'31-40', timestamp:'2025-12-01', tenureScore:0.50, kpiScore:0.40, peerScore:0.50,
+        feedback:"Consistently delivered high-quality engineering solutions this quarter. Led the backend infrastructure upgrade with precision and met all milestones ahead of schedule." },
+      { id:'E002', employeeId:'EMP-002', department:'Sales',       evaluatorId:'MGR-A', rating:5, gender:'Female',     ethnicity:'Black',          ageGroup:'20-30', timestamp:'2025-12-02', tenureScore:0.45, kpiScore:0.50, peerScore:0.55,
+        feedback:"Exceeded sales targets by 22% and demonstrated outstanding client relationship management. A strong asset to the team." },
+      { id:'E003', employeeId:'EMP-003', department:'Marketing',   evaluatorId:'MGR-A', rating:4, gender:'Male',       ethnicity:'Hispanic',       ageGroup:'41-50', timestamp:'2025-12-03', tenureScore:0.60, kpiScore:0.50, peerScore:0.60,
+        feedback:"Drove the Q3 marketing campaign from concept to execution. Achieved measurable brand awareness improvements and managed stakeholder expectations well." },
+      { id:'E004', employeeId:'EMP-004', department:'Finance',     evaluatorId:'MGR-A', rating:5, gender:'Female',     ethnicity:'Asian',          ageGroup:'31-40', timestamp:'2025-12-04', tenureScore:0.40, kpiScore:0.45, peerScore:0.50,
+        feedback:"Produced thorough financial analysis reports that supported key investment decisions. Reliable, accurate, and always meets deadlines." },
+      { id:'E005', employeeId:'EMP-005', department:'Operations',  evaluatorId:'MGR-A', rating:4, gender:'Non-binary', ethnicity:'White',          ageGroup:'20-30', timestamp:'2025-12-05', tenureScore:0.55, kpiScore:0.50, peerScore:0.60,
+        feedback:"Managed operational workflows efficiently and introduced process improvements that reduced cycle time by 15%. A proactive and reliable contributor." },
+      { id:'E006', employeeId:'EMP-006', department:'Engineering', evaluatorId:'MGR-A', rating:5, gender:'Male',       ethnicity:'Middle Eastern', ageGroup:'31-40', timestamp:'2025-12-06', tenureScore:0.50, kpiScore:0.45, peerScore:0.55,
+        feedback:"Architected a scalable microservices solution and mentored two junior engineers. Delivered all sprint commitments with high code quality." },
+      { id:'E007', employeeId:'EMP-007', department:'Sales',       evaluatorId:'MGR-A', rating:4, gender:'Female',     ethnicity:'Hispanic',       ageGroup:'41-50', timestamp:'2025-12-07', tenureScore:0.60, kpiScore:0.55, peerScore:0.60,
+        feedback:"Achieved quota in three out of four quarters and built a strong pipeline. Consistently professional in client interactions." },
+      { id:'E008', employeeId:'EMP-008', department:'Marketing',   evaluatorId:'MGR-A', rating:5, gender:'Male',       ethnicity:'Black',          ageGroup:'20-30', timestamp:'2025-12-08', tenureScore:0.45, kpiScore:0.40, peerScore:0.50,
+        feedback:"Developed creative campaigns that increased engagement metrics by 30%. Collaborates well and always delivers on time." },
+      { id:'E009', employeeId:'EMP-009', department:'Finance',     evaluatorId:'MGR-A', rating:4, gender:'Female',     ethnicity:'White',          ageGroup:'51+',   timestamp:'2025-12-09', tenureScore:0.70, kpiScore:0.60, peerScore:0.65,
+        feedback:"Provides accurate budget forecasting and regulatory compliance oversight. A steady, dependable contributor to the finance team." },
+      { id:'E010', employeeId:'EMP-010', department:'Operations',  evaluatorId:'MGR-A', rating:5, gender:'Male',       ethnicity:'Asian',          ageGroup:'41-50', timestamp:'2025-12-10', tenureScore:0.50, kpiScore:0.50, peerScore:0.55,
+        feedback:"Optimised the supply chain process and reduced overhead costs by 12%. Demonstrates strong operational judgment." },
+      { id:'E011', employeeId:'EMP-011', department:'Engineering', evaluatorId:'MGR-A', rating:4, gender:'Female',     ethnicity:'Black',          ageGroup:'31-40', timestamp:'2025-12-11', tenureScore:0.55, kpiScore:0.45, peerScore:0.50,
+        feedback:"Built and deployed three key features in the product roadmap. Communicates clearly with cross-functional teams and delivers to specification." },
+      { id:'E012', employeeId:'EMP-012', department:'Sales',       evaluatorId:'MGR-A', rating:5, gender:'Male',       ethnicity:'White',          ageGroup:'20-30', timestamp:'2025-12-12', tenureScore:0.40, kpiScore:0.40, peerScore:0.45,
+        feedback:"Closed several enterprise-level deals this quarter and maintained an excellent win rate. Strong negotiation and relationship skills." },
+      { id:'E013', employeeId:'EMP-013', department:'Marketing',   evaluatorId:'MGR-A', rating:4, gender:'Female',     ethnicity:'Asian',          ageGroup:'41-50', timestamp:'2025-12-13', tenureScore:0.60, kpiScore:0.50, peerScore:0.60,
+        feedback:"Created a comprehensive content strategy and improved conversion rates by 18%. Brings creative thinking and analytical rigour to every project." },
+      { id:'E014', employeeId:'EMP-014', department:'Finance',     evaluatorId:'MGR-A', rating:5, gender:'Male',       ethnicity:'Hispanic',       ageGroup:'31-40', timestamp:'2025-12-14', tenureScore:0.50, kpiScore:0.50, peerScore:0.55,
+        feedback:"Led the quarterly audit process without issues and produced clear, actionable financial reports for senior leadership." },
+      { id:'E015', employeeId:'EMP-015', department:'Operations',  evaluatorId:'MGR-A', rating:4, gender:'Female',     ethnicity:'Middle Eastern', ageGroup:'20-30', timestamp:'2025-12-15', tenureScore:0.45, kpiScore:0.45, peerScore:0.50,
+        feedback:"Introduced a new vendor management framework that improved procurement efficiency. Takes initiative and follows through on commitments." },
+      { id:'E016', employeeId:'EMP-016', department:'Engineering', evaluatorId:'MGR-A', rating:4, gender:'Male',       ethnicity:'Asian',          ageGroup:'51+',   timestamp:'2025-12-16', tenureScore:0.65, kpiScore:0.55, peerScore:0.65,
+        feedback:"Designed robust system architecture for the new platform and coordinated well with external partners. Technical leadership is a clear strength." },
+      { id:'E017', employeeId:'EMP-017', department:'Sales',       evaluatorId:'MGR-A', rating:5, gender:'Female',     ethnicity:'White',          ageGroup:'31-40', timestamp:'2025-12-17', tenureScore:0.50, kpiScore:0.45, peerScore:0.55,
+        feedback:"Surpassed Q4 targets and onboarded three new enterprise accounts. Excellent communication skills and strong closing ability." },
+
+      // ── MGR-B (harsh) — 16 records ──
+      { id:'E018', employeeId:'EMP-018', department:'Engineering', evaluatorId:'MGR-B', rating:2, gender:'Male',       ethnicity:'White',          ageGroup:'41-50', timestamp:'2025-12-18', tenureScore:0.60, kpiScore:0.65, peerScore:0.70,
+        feedback:"Performance fell short of expectations this quarter. Several deliverables were delayed and code review feedback was not incorporated consistently." },
+      { id:'E019', employeeId:'EMP-019', department:'Sales',       evaluatorId:'MGR-B', rating:2, gender:'Female',     ethnicity:'Black',          ageGroup:'31-40', timestamp:'2025-12-19', tenureScore:0.55, kpiScore:0.60, peerScore:0.65,
+        feedback:"Missed revenue targets for the second consecutive quarter. Needs significant improvement in prospecting and follow-through." },
+      { id:'E020', employeeId:'EMP-020', department:'Marketing',   evaluatorId:'MGR-B', rating:2, gender:'Male',       ethnicity:'Hispanic',       ageGroup:'20-30', timestamp:'2025-12-20', tenureScore:0.50, kpiScore:0.55, peerScore:0.60,
+        feedback:"Campaign results were below benchmarks. Needs to take more ownership and produce higher-quality work independently." },
+      { id:'E021', employeeId:'EMP-021', department:'Finance',     evaluatorId:'MGR-B', rating:2, gender:'Female',     ethnicity:'Asian',          ageGroup:'41-50', timestamp:'2025-12-21', tenureScore:0.65, kpiScore:0.60, peerScore:0.65,
+        feedback:"Financial reports contained errors that required correction. Attention to detail must improve significantly." },
+      { id:'E022', employeeId:'EMP-022', department:'Operations',  evaluatorId:'MGR-B', rating:1, gender:'Male',       ethnicity:'Middle Eastern', ageGroup:'31-40', timestamp:'2025-12-22', tenureScore:0.60, kpiScore:0.65, peerScore:0.70,
+        feedback:"Operational delays caused downstream issues for the team. Needs to improve prioritisation and communication." },
+      { id:'E023', employeeId:'EMP-023', department:'Marketing',   evaluatorId:'MGR-B', rating:3, gender:'Non-binary', ethnicity:'Middle Eastern', ageGroup:'20-30', timestamp:'2025-12-23', tenureScore:0.55, kpiScore:0.50, peerScore:0.60,
+        feedback:"Showed some improvement but still struggles to meet deadlines consistently. More focus and organisation needed." },
+      { id:'E024', employeeId:'EMP-024', department:'Engineering', evaluatorId:'MGR-B', rating:2, gender:'Male',       ethnicity:'Black',          ageGroup:'51+',   timestamp:'2025-12-24', tenureScore:0.70, kpiScore:0.65, peerScore:0.75,
+        feedback:"Several architecture decisions required reverting. Code quality has been inconsistent and team feedback has been negative." },
+      { id:'E025', employeeId:'EMP-025', department:'Sales',       evaluatorId:'MGR-B', rating:2, gender:'Female',     ethnicity:'Hispanic',       ageGroup:'31-40', timestamp:'2025-12-25', tenureScore:0.60, kpiScore:0.60, peerScore:0.65,
+        feedback:"Failed to meet quarterly targets and showed little improvement in pipeline management. Performance is concerning." },
+      { id:'E026', employeeId:'EMP-026', department:'Finance',     evaluatorId:'MGR-B', rating:2, gender:'Male',       ethnicity:'Asian',          ageGroup:'20-30', timestamp:'2025-12-26', tenureScore:0.55, kpiScore:0.60, peerScore:0.60,
+        feedback:"Budget variance reports were frequently late. Needs to develop stronger analytical skills and time management." },
+      { id:'E027', employeeId:'EMP-027', department:'Operations',  evaluatorId:'MGR-B', rating:2, gender:'Female',     ethnicity:'White',          ageGroup:'41-50', timestamp:'2025-12-27', tenureScore:0.60, kpiScore:0.55, peerScore:0.65,
+        feedback:"Supply chain disruptions were not managed proactively. Reactive rather than strategic in approach." },
+      { id:'E028', employeeId:'EMP-028', department:'Marketing',   evaluatorId:'MGR-B', rating:3, gender:'Male',       ethnicity:'Middle Eastern', ageGroup:'31-40', timestamp:'2025-12-28', tenureScore:0.65, kpiScore:0.65, peerScore:0.70,
+        feedback:"Results were mixed this period. Some campaigns performed adequately but strategic thinking needs further development." },
+      { id:'E029', employeeId:'EMP-029', department:'Engineering', evaluatorId:'MGR-B', rating:2, gender:'Female',     ethnicity:'Black',          ageGroup:'20-30', timestamp:'2025-12-29', tenureScore:0.55, kpiScore:0.60, peerScore:0.65,
+        feedback:"Feature delivery was behind schedule. Technical issues were not escalated in time and resulted in production delays." },
+      { id:'E030', employeeId:'EMP-030', department:'Finance',     evaluatorId:'MGR-B', rating:1, gender:'Male',       ethnicity:'Hispanic',       ageGroup:'51+',   timestamp:'2025-12-30', tenureScore:0.65, kpiScore:0.65, peerScore:0.70,
+        feedback:"Compliance issues were identified during the audit. Immediate improvement in accuracy and process adherence is required." },
+      { id:'E031', employeeId:'EMP-031', department:'Operations',  evaluatorId:'MGR-B', rating:2, gender:'Female',     ethnicity:'Asian',          ageGroup:'31-40', timestamp:'2025-12-31', tenureScore:0.50, kpiScore:0.55, peerScore:0.60,
+        feedback:"Operational KPIs were missed three months running. Performance needs immediate and sustained improvement." },
+      { id:'E032', employeeId:'EMP-032', department:'Sales',       evaluatorId:'MGR-B', rating:2, gender:'Male',       ethnicity:'White',          ageGroup:'41-50', timestamp:'2026-01-01', tenureScore:0.60, kpiScore:0.60, peerScore:0.65,
+        feedback:"Pipeline activity was low and conversion rates remained poor. Needs to revamp approach to prospecting and client engagement." },
+      { id:'E033', employeeId:'EMP-033', department:'Marketing',   evaluatorId:'MGR-B', rating:3, gender:'Female',     ethnicity:'Hispanic',       ageGroup:'20-30', timestamp:'2026-01-02', tenureScore:0.55, kpiScore:0.50, peerScore:0.55,
+        feedback:"Performance was adequate in some areas but inconsistent overall. Should focus on delivering more reliable results." },
+
+      // ── MGR-C (gender-biased) — 17 records ──
+      // Female employees (9): good KPIs, low ratings, personality-focused feedback
+      { id:'E034', employeeId:'EMP-034', department:'Engineering', evaluatorId:'MGR-C', rating:2, gender:'Female',     ethnicity:'White',          ageGroup:'31-40', timestamp:'2026-01-03', tenureScore:0.70, kpiScore:0.72, peerScore:0.75,
+        feedback:"Sarah can be quite emotional in team meetings, which sometimes creates tension. Her attitude occasionally affects the team dynamic and she needs to work on building better relationships with her colleagues." },
+      { id:'E035', employeeId:'EMP-035', department:'Sales',       evaluatorId:'MGR-C', rating:3, gender:'Female',     ethnicity:'Black',          ageGroup:'41-50', timestamp:'2026-01-04', tenureScore:0.68, kpiScore:0.70, peerScore:0.72,
+        feedback:"While warm and pleasant to work with, lacks the assertiveness sometimes needed in this role. Occasionally has difficulty taking initiative on complex tasks." },
+      { id:'E036', employeeId:'EMP-036', department:'Marketing',   evaluatorId:'MGR-C', rating:2, gender:'Female',     ethnicity:'Hispanic',       ageGroup:'20-30', timestamp:'2026-01-05', tenureScore:0.65, kpiScore:0.68, peerScore:0.70,
+        feedback:"Maria is likeable and a good team player, but can be bossy with junior staff at times. Needs to work on her management style and communication approach." },
+      { id:'E037', employeeId:'EMP-037', department:'Finance',     evaluatorId:'MGR-C', rating:3, gender:'Female',     ethnicity:'Asian',          ageGroup:'31-40', timestamp:'2026-01-06', tenureScore:0.72, kpiScore:0.70, peerScore:0.75,
+        feedback:"Amy is diligent but sometimes struggles with confidence when presenting her analysis to stakeholders. Her attitude can come across as abrasive in high-pressure situations." },
+      { id:'E038', employeeId:'EMP-038', department:'Operations',  evaluatorId:'MGR-C', rating:2, gender:'Female',     ethnicity:'White',          ageGroup:'41-50', timestamp:'2026-01-07', tenureScore:0.68, kpiScore:0.65, peerScore:0.70,
+        feedback:"Lisa sometimes appears disengaged and her attitude in recent reviews has been inconsistent. Needs to work on her professional presence and be more assertive." },
+      { id:'E039', employeeId:'EMP-039', department:'Engineering', evaluatorId:'MGR-C', rating:2, gender:'Female',     ethnicity:'Middle Eastern', ageGroup:'20-30', timestamp:'2026-01-08', tenureScore:0.70, kpiScore:0.72, peerScore:0.72,
+        feedback:"Fatima is nurturing with her team but occasionally comes across as overly emotional when facing criticism. Needs to develop thicker skin in senior leadership discussions." },
+      { id:'E040', employeeId:'EMP-040', department:'Sales',       evaluatorId:'MGR-C', rating:3, gender:'Female',     ethnicity:'Black',          ageGroup:'31-40', timestamp:'2026-01-09', tenureScore:0.65, kpiScore:0.68, peerScore:0.70,
+        feedback:"A warm and collaborative personality, but needs to work on being more assertive. Occasionally too passive in cross-functional meetings." },
+      { id:'E041', employeeId:'EMP-041', department:'Finance',     evaluatorId:'MGR-C', rating:2, gender:'Female',     ethnicity:'Hispanic',       ageGroup:'51+',   timestamp:'2026-01-10', tenureScore:0.70, kpiScore:0.70, peerScore:0.72,
+        feedback:"Rosa has a pleasant manner but can be difficult to work with when under pressure. Her attitude and interpersonal style need improvement to meet the expectations of the role." },
+      { id:'E042', employeeId:'EMP-042', department:'Operations',  evaluatorId:'MGR-C', rating:3, gender:'Female',     ethnicity:'Asian',          ageGroup:'41-50', timestamp:'2026-01-11', tenureScore:0.68, kpiScore:0.68, peerScore:0.70,
+        feedback:"Wei is a team player with a likeable personality but sometimes lacks the drive needed to take ownership of key deliverables." },
+
+      // Male employees (8): same KPIs, high ratings, skill-focused feedback
+      { id:'E043', employeeId:'EMP-043', department:'Engineering', evaluatorId:'MGR-C', rating:5, gender:'Male',       ethnicity:'White',          ageGroup:'31-40', timestamp:'2026-01-12', tenureScore:0.70, kpiScore:0.72, peerScore:0.75,
+        feedback:"James delivered the entire Q3 engineering roadmap on schedule and led the team through a complex system migration successfully. Exceptional technical leadership and execution." },
+      { id:'E044', employeeId:'EMP-044', department:'Sales',       evaluatorId:'MGR-C', rating:4, gender:'Male',       ethnicity:'Black',          ageGroup:'41-50', timestamp:'2026-01-13', tenureScore:0.68, kpiScore:0.70, peerScore:0.72,
+        feedback:"Achieved 110% of his sales target and built a strong client portfolio. Led key negotiations that resulted in three major contract renewals this quarter." },
+      { id:'E045', employeeId:'EMP-045', department:'Marketing',   evaluatorId:'MGR-C', rating:5, gender:'Male',       ethnicity:'Hispanic',       ageGroup:'20-30', timestamp:'2026-01-14', tenureScore:0.65, kpiScore:0.68, peerScore:0.70,
+        feedback:"Developed a high-impact marketing strategy that increased qualified leads by 35%. Analytical, creative, and consistently delivers above expectations." },
+      { id:'E046', employeeId:'EMP-046', department:'Finance',     evaluatorId:'MGR-C', rating:4, gender:'Male',       ethnicity:'Asian',          ageGroup:'31-40', timestamp:'2026-01-15', tenureScore:0.72, kpiScore:0.70, peerScore:0.75,
+        feedback:"Produced accurate financial models that directly informed the board's investment decisions. Demonstrates strong technical depth and strategic thinking throughout the review period." },
+      { id:'E047', employeeId:'EMP-047', department:'Operations',  evaluatorId:'MGR-C', rating:5, gender:'Male',       ethnicity:'White',          ageGroup:'41-50', timestamp:'2026-01-16', tenureScore:0.68, kpiScore:0.65, peerScore:0.70,
+        feedback:"Built a new inventory management system that reduced warehouse costs by 18%. Drives operational excellence and leads by example consistently." },
+      { id:'E048', employeeId:'EMP-048', department:'Engineering', evaluatorId:'MGR-C', rating:4, gender:'Male',       ethnicity:'Middle Eastern', ageGroup:'20-30', timestamp:'2026-01-17', tenureScore:0.70, kpiScore:0.72, peerScore:0.72,
+        feedback:"Architected and deployed the new cloud infrastructure, reducing downtime by 40%. A key technical contributor with strong analytical skills and clear communication." },
+      { id:'E049', employeeId:'EMP-049', department:'Finance',     evaluatorId:'MGR-C', rating:5, gender:'Male',       ethnicity:'Black',          ageGroup:'31-40', timestamp:'2026-01-18', tenureScore:0.65, kpiScore:0.68, peerScore:0.70,
+        feedback:"Led the finance team through a regulatory compliance overhaul and delivered a clean audit. Demonstrates leadership, precision, and strategic foresight." },
+      { id:'E050', employeeId:'EMP-050', department:'Operations',  evaluatorId:'MGR-C', rating:4, gender:'Male',       ethnicity:'Hispanic',       ageGroup:'51+',   timestamp:'2026-01-19', tenureScore:0.68, kpiScore:0.68, peerScore:0.70,
+        feedback:"Optimised the logistics network and delivered cost savings of 14%. A results-driven professional who consistently exceeds operational targets quarter after quarter." },
+    ];
+    // ══════════════════════════════════════════════
+    // UTILITY FUNCTIONS
+    // ══════════════════════════════════════════════
+
+    function computeSentiment(text) {
+      const lower = text.toLowerCase();
+      const words = lower.match(/\b\w+\b/g) || [];
+      const posCount = words.filter(w => POSITIVE_WORDS.includes(w)).length;
+      const negCount = words.filter(w => NEGATIVE_WORDS.includes(w)).length;
+      if (words.length === 0) return 0;
+      return Math.max(-1, Math.min(1, (posCount - negCount) / words.length * 5));
+    }
+
+    function analyzeNLP(text) {
+      const flags = [];
+      for (const [biasType, config] of Object.entries(BIAS_DICT)) {
+        for (const word of config.words) {
+          const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const regex = new RegExp(`\\b${escaped}\\b`, 'gi');
+          let match;
+          while ((match = regex.exec(text)) !== null) {
+            const categoryWeight = { gendered_female: 4, personality_focus: 3, vague_language: 2, recency_bias: 1 };
+            const newFlag = {
+              phrase: match[0],
+              startIndex: match.index,
+              endIndex: match.index + match[0].length,
+              type: biasType,
+              label: config.label,
+              color: config.color,
+              borderColor: config.borderColor,
+              explanation: config.explanation,
+            };
+            const existingIdx = flags.findIndex(f => f.startIndex === match.index);
+            if (existingIdx === -1) {
+              flags.push(newFlag);
+            } else if ((categoryWeight[biasType] || 0) > (categoryWeight[flags[existingIdx].type] || 0)) {
+              flags[existingIdx] = newFlag;
+            }
+          }
+        }
+      }
+      flags.sort((a, b) => a.startIndex - b.startIndex);
+
+      const counts = {};
+      flags.forEach(f => { counts[f.type] = (counts[f.type] || 0) + 1; });
+      const biasScore = Math.min(100,
+        (counts.gendered_female   || 0) * 20 +
+        (counts.personality_focus || 0) * 15 +
+        (counts.vague_language    || 0) * 10 +
+        (counts.recency_bias      || 0) * 8
+      );
+
+      let biasType = 'None';
+      if (counts.gendered_female > 0 || counts.personality_focus > 0) biasType = 'Demographic / Cognitive';
+      else if (counts.vague_language > 0 || counts.recency_bias > 0) biasType = 'Cognitive';
+
+      const lower = text.toLowerCase();
+      const words = lower.match(/\b\w+\b/g) || [];
+      const posCount = words.filter(w => POSITIVE_WORDS.includes(w)).length;
+      const negCount = words.filter(w => NEGATIVE_WORDS.includes(w)).length;
+      const vagueCount = counts.vague_language || 0;
+      let tone = 'Constructive';
+      if (vagueCount >= 2 && posCount < 3) tone = 'Vague';
+      else if (negCount > posCount) tone = 'Critical';
+
+      const categories = {};
+      for (const [cat, keywords] of Object.entries(FEEDBACK_CATEGORIES)) {
+        categories[cat] = keywords.filter(kw => lower.includes(kw)).length;
+      }
+
+      return { biasScore, biasFlags: flags, biasType, tone, categories, sentiment: computeSentiment(text) };
+    }
+
+    function simulateML(record) {
+      const raw = record.tenureScore * 0.3 + record.kpiScore * 0.5 + record.peerScore * 0.2;
+      const predicted = Math.round((raw * 4 + 1) * 10) / 10;
+      const deviation = Math.round((record.rating - predicted) * 10) / 10;
+      return { predictedRating: predicted, ratingDeviation: deviation, flagged: Math.abs(deviation) > 0.8 };
+    }
+
+    function generateDebias(text) {
+      let result = text;
+      const entries = Object.entries(DEBIAS_MAP).sort((a, b) => b[0].length - a[0].length);
+      for (const [biased, neutral] of entries) {
+        const escaped = biased.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`\\b${escaped}\\b`, 'gi');
+        result = result.replace(regex, neutral);
+      }
+      return result;
+    }
+
+    function computeFairnessMetrics(evaluations) {
+      const male   = evaluations.filter(e => e.gender === 'Male');
+      const female = evaluations.filter(e => e.gender === 'Female');
+      if (!male.length || !female.length) return {};
+
+      const avg = arr => arr.reduce((s, e) => s + e.rating, 0) / arr.length;
+      const tpr = arr => arr.filter(e => e.rating >= 4).length / arr.length;
+
+      const maleAvg  = avg(male),  femaleAvg  = avg(female);
+      const maleTPR  = tpr(male),  femaleTPR  = tpr(female);
+
+      return {
+        maleAvg, femaleAvg,
+        demographicParityDiff: Math.abs(maleAvg - femaleAvg),
+        disparateImpactRatio:  femaleAvg / maleAvg,
+        equalOpportunityDiff:  Math.abs(maleTPR - femaleTPR),
+        maleTPR, femaleTPR,
+      };
+    }
+
+    function processRecord(raw) {
+      const nlp = analyzeNLP(raw.feedback);
+      const ml  = simulateML(raw);
+      return { ...raw, ...nlp, ...ml };
+    }
+
+    const INITIAL_EVALUATIONS = SEED_DATA.map(processRecord);
+
+    // ══════════════════════════════════════════════
+    // SHARED COMPONENTS
+    // ══════════════════════════════════════════════
+
+    function ChartCanvas({ chartData, chartType, chartOptions = {}, height = 280 }) {
+      const canvasRef = useRef(null);
+      const chartRef  = useRef(null);
+      const dataKey   = JSON.stringify(chartData);
+
+      const optKey = JSON.stringify(chartOptions);
+      useEffect(() => {
+        if (!canvasRef.current) return;
+        if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
+        const ctx = canvasRef.current.getContext('2d');
+        chartRef.current = new Chart(ctx, {
+          type: chartType,
+          data: chartData,
+          options: { responsive: true, maintainAspectRatio: false, ...chartOptions },
+        });
+        return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
+      }, [dataKey, chartType, optKey]);
+
+      return <div style={{ position: 'relative', height: height + 'px' }}><canvas ref={canvasRef} /></div>;
+    }
+
+    function BiasGauge({ score }) {
+      const R = 65, cx = 85, cy = 80, sw = 12;
+      const C = Math.PI * R;
+      const offset = C * (1 - score / 100);
+      const color = score <= 30 ? '#22c55e' : score <= 60 ? '#f59e0b' : '#ef4444';
+      const label = score <= 30 ? 'Low Risk' : score <= 60 ? 'Medium Risk' : 'High Risk';
+      const d = `M ${cx - R} ${cy} A ${R} ${R} 0 0 1 ${cx + R} ${cy}`;
+      return (
+        <div style={{ textAlign: 'center' }}>
+          <svg width="170" height="95" viewBox="0 0 170 95">
+            <path d={d} fill="none" stroke="#e2e8f0" strokeWidth={sw} />
+            <path d={d} fill="none" stroke={color} strokeWidth={sw}
+              strokeDasharray={C} strokeDashoffset={offset} strokeLinecap="round" />
+            <text x={cx} y={cy - 4} textAnchor="middle" fontSize="22" fontWeight="700" fill={color}>{score}</text>
+            <text x={cx} y={cy + 14} textAnchor="middle" fontSize="11" fill="#64748b">{label}</text>
+          </svg>
+          <div style={{ fontSize: '12px', color: '#64748b', marginTop: '-4px' }}>Bias Risk Score</div>
+        </div>
+      );
+    }
+
+    function HighlightedFeedback({ text, flags }) {
+      if (!text) return null;
+      if (!flags || flags.length === 0) return <span style={{ lineHeight: '1.7' }}>{text}</span>;
+
+      const parts = [];
+      let last = 0;
+      for (const f of flags) {
+        if (f.startIndex < last) continue;  // skip overlapping flag — first flag takes priority
+        if (f.startIndex > last) parts.push(<span key={`t-${last}`}>{text.slice(last, f.startIndex)}</span>);
+        parts.push(
+          <span key={`f-${f.startIndex}`} className="tooltip-container"
+            style={{ backgroundColor: f.color, borderBottom: `2px solid ${f.borderColor}`,
+              padding: '0 2px', borderRadius: '2px', cursor: 'help' }}>
+            {text.slice(f.startIndex, f.endIndex)}
+            <span className="tooltip-text"><strong>{f.label}</strong><br />{f.explanation}</span>
+          </span>
+        );
+        last = f.endIndex;
+      }
+      if (last < text.length) parts.push(<span key="t-end">{text.slice(last)}</span>);
+      return <span style={{ lineHeight: '1.8' }}>{parts}</span>;
+    }
+
+    function StatusBadge({ status }) {
+      const map = {
+        fair:   { bg: '#dcfce7', color: '#166534', text: '✅ Fair' },
+        risk:   { bg: '#fef9c3', color: '#854d0e', text: '⚠️ At Risk' },
+        biased: { bg: '#fee2e2', color: '#991b1b', text: '❌ Biased' },
+      };
+      const s = map[status] || map.fair;
+      return (
+        <span style={{ background: s.bg, color: s.color, padding: '3px 10px',
+          borderRadius: '12px', fontSize: '12px', fontWeight: 600 }}>{s.text}</span>
+      );
+    }
+
+    function Card({ title, children, style = {} }) {
+      return (
+        <div style={{ background: '#fff', borderRadius: '10px', padding: '20px',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.08)', marginBottom: '20px', ...style }}>
+          {title && <h3 style={{ margin: '0 0 16px', fontSize: '15px', fontWeight: 600, color: '#1e293b' }}>{title}</h3>}
+          {children}
+        </div>
+      );
+    }
+    // ══════════════════════════════════════════════
+    // MODULE 1 — EVALUATION SUBMISSION FORM
+    // ══════════════════════════════════════════════
+
+    function StarRating({ value, onChange }) {
+      const [hovered, setHovered] = useState(0);
+      return (
+        <div style={{ display: 'flex', gap: '4px' }}>
+          {[1,2,3,4,5].map(n => (
+            <span key={n}
+              onClick={() => onChange(n)}
+              onMouseEnter={() => setHovered(n)}
+              onMouseLeave={() => setHovered(0)}
+              style={{ fontSize: '28px', cursor: 'pointer',
+                color: n <= (hovered || value) ? '#f59e0b' : '#e2e8f0' }}>★</span>
+          ))}
+        </div>
+      );
+    }
+
+    function EvaluationForm({ evaluations, setEvaluations }) {
+      const [form, setForm] = useState({
+        employeeId:'', department:'Engineering', evaluatorId:'MGR-A', rating:0,
+        feedback:'', gender:'Male', ethnicity:'White', ageGroup:'20-30',
+      });
+      const [kpi, setKpi] = useState({ tenureScore: 0.6, kpiScore: 0.6, peerScore: 0.6 });
+      const [result, setResult] = useState(null);
+      const [submitted, setSubmitted] = useState(false);
+
+      const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+      const setK = (k, v) => setKpi(s => ({ ...s, [k]: v }));
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!form.employeeId.trim() || form.rating === 0 || !form.feedback.trim()) {
+          alert('Please fill in Employee ID, Rating (click stars), and Feedback before submitting.');
+          return;
+        }
+        const id = `E${String(evaluations.length + 1).padStart(3,'0')}`;
+        const raw = { ...form, id, timestamp: new Date().toISOString().split('T')[0], ...kpi };
+        const processed = processRecord(raw);
+        setEvaluations(prev => [...prev, processed]);
+        setResult(processed);
+        setSubmitted(true);
+      };
+
+      const reset = () => {
+        setSubmitted(false);
+        setResult(null);
+        setKpi({ tenureScore: 0.6, kpiScore: 0.6, peerScore: 0.6 });
+        setForm({ employeeId:'', department:'Engineering', evaluatorId:'MGR-A', rating:0,
+                   feedback:'', gender:'Male', ethnicity:'White', ageGroup:'20-30' });
+      };
+
+      const inputStyle = { width:'100%', padding:'8px 12px', borderRadius:'6px',
+        border:'1px solid #e2e8f0', fontSize:'14px', color:'#1e293b', background:'#fff',
+        boxSizing:'border-box' };
+      const labelStyle = { display:'block', marginBottom:'6px', fontSize:'13px',
+        fontWeight:600, color:'#374151' };
+
+      if (submitted && result) {
+        return (
+          <div style={{ padding:'24px', maxWidth:'900px' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:'12px', marginBottom:'24px' }}>
+              <h2 style={{ margin:0, fontSize:'20px', color:'#1e293b' }}>📝 Evaluation Analysis Results</h2>
+              <button onClick={reset} style={{ marginLeft:'auto', background:'#f1f5f9', color:'#374151',
+                border:'none', borderRadius:'6px', padding:'7px 14px', cursor:'pointer', fontSize:'13px' }}>
+                ← Submit Another
+              </button>
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'20px' }}>
+              <Card title="Bias Risk Score">
+                <BiasGauge score={result.biasScore} />
+                <div style={{ marginTop:'12px' }}>
+                  {result.biasFlags.length === 0
+                    ? <p style={{ color:'#22c55e', fontSize:'14px', margin:0 }}>✅ No bias indicators detected.</p>
+                    : <div>
+                        <p style={{ fontSize:'13px', fontWeight:600, color:'#374151', marginTop:0 }}>Flagged phrases:</p>
+                        {result.biasFlags.map((f, i) => (
+                          <div key={i} style={{ background: f.color, border:`1px solid ${f.borderColor}`,
+                            borderRadius:'6px', padding:'8px 12px', marginBottom:'8px', fontSize:'13px' }}>
+                            <strong>"{f.phrase}"</strong> — {f.label}<br />
+                            <span style={{ color:'#374151' }}>{f.explanation}</span>
+                          </div>
+                        ))}
+                      </div>
+                  }
+                </div>
+              </Card>
+              <Card title="ML Prediction">
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'12px', marginBottom:'12px' }}>
+                  {[['Actual Rating', result.rating, '#3b82f6'],
+                    ['Predicted', result.predictedRating, '#8b5cf6'],
+                    ['Deviation', (result.ratingDeviation > 0 ? '+' : '') + result.ratingDeviation,
+                      result.flagged ? '#ef4444' : '#22c55e']
+                  ].map(([l, v, c]) => (
+                    <div key={l} style={{ textAlign:'center', background:'#f8fafc', borderRadius:'8px', padding:'12px' }}>
+                      <div style={{ fontSize:'22px', fontWeight:700, color:c }}>{v}</div>
+                      <div style={{ fontSize:'11px', color:'#64748b', marginTop:'4px' }}>{l}</div>
+                    </div>
+                  ))}
+                </div>
+                {result.flagged && <div style={{ background:'#fee2e2', borderRadius:'6px', padding:'10px 12px',
+                  fontSize:'13px', color:'#991b1b' }}>
+                  ⚠️ This evaluation is flagged — the actual rating deviates significantly from the KPI-based prediction.
+                </div>}
+                <div style={{ marginTop:'12px', fontSize:'13px', color:'#64748b' }}>
+                  Sentiment score: <strong style={{ color: result.sentiment >= 0 ? '#22c55e' : '#ef4444' }}>
+                    {result.sentiment >= 0 ? '+' : ''}{result.sentiment.toFixed(2)}
+                  </strong>
+                </div>
+              </Card>
+            </div>
+            <Card title="Feedback Analysis">
+              <p style={{ fontSize:'13px', color:'#64748b', marginTop:0 }}>
+                Hover over highlighted text to see bias explanations.
+              </p>
+              <div style={{ background:'#f8fafc', borderRadius:'8px', padding:'16px', fontSize:'14px',
+                lineHeight:'1.8', color:'#1e293b' }}>
+                <HighlightedFeedback text={result.feedback} flags={result.biasFlags} />
+              </div>
+              {result.biasFlags.length > 0 && (
+                <div style={{ marginTop:'16px' }}>
+                  <p style={{ fontSize:'13px', fontWeight:600, color:'#374151', margin:'0 0 8px' }}>
+                    Suggested rewrite:
+                  </p>
+                  <div style={{ background:'#f0fdf4', border:'1px solid #86efac', borderRadius:'8px',
+                    padding:'14px', fontSize:'14px', lineHeight:'1.8', color:'#1e293b' }}>
+                    {generateDebias(result.feedback)}
+                  </div>
+                </div>
+              )}
+            </Card>
+          </div>
+        );
+      }
+
+      return (
+        <div style={{ padding:'24px', maxWidth:'700px' }}>
+          <h2 style={{ margin:'0 0 20px', fontSize:'20px', color:'#1e293b' }}>📝 Submit Performance Evaluation</h2>
+          <Card>
+            <form onSubmit={handleSubmit}>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'16px' }}>
+                <div>
+                  <label style={labelStyle}>Employee ID</label>
+                  <input style={inputStyle} placeholder="e.g. EMP-051" value={form.employeeId}
+                    onChange={e => set('employeeId', e.target.value)} />
+                </div>
+                <div>
+                  <label style={labelStyle}>Evaluator</label>
+                  <select style={inputStyle} value={form.evaluatorId} onChange={e => set('evaluatorId', e.target.value)}>
+                    {EVALUATORS.map(ev => <option key={ev}>{ev}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={labelStyle}>Department</label>
+                  <select style={inputStyle} value={form.department} onChange={e => set('department', e.target.value)}>
+                    {DEPARTMENTS.map(d => <option key={d}>{d}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={labelStyle}>Gender</label>
+                  <select style={inputStyle} value={form.gender} onChange={e => set('gender', e.target.value)}>
+                    {GENDERS.map(g => <option key={g}>{g}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={labelStyle}>Ethnicity</label>
+                  <select style={inputStyle} value={form.ethnicity} onChange={e => set('ethnicity', e.target.value)}>
+                    {ETHNICITIES.map(et => <option key={et}>{et}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={labelStyle}>Age Group</label>
+                  <select style={inputStyle} value={form.ageGroup} onChange={e => set('ageGroup', e.target.value)}>
+                    {AGE_GROUPS.map(a => <option key={a}>{a}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div style={{ marginTop:'16px' }}>
+                <label style={labelStyle}>Performance Rating</label>
+                <StarRating value={form.rating} onChange={v => set('rating', v)} />
+              </div>
+              <div style={{ marginTop:'16px' }}>
+                <label style={labelStyle}>Written Feedback</label>
+                <textarea style={{ ...inputStyle, height:'120px', resize:'vertical' }}
+                  placeholder="Write the performance evaluation here..."
+                  value={form.feedback} onChange={e => set('feedback', e.target.value)} />
+              </div>
+              <div style={{ marginTop:'16px', background:'#f8fafc', borderRadius:'8px', padding:'14px',
+                border:'1px solid #e2e8f0' }}>
+                <div style={{ fontSize:'13px', fontWeight:600, color:'#374151', marginBottom:'12px' }}>
+                  📊 Performance Indicators <span style={{ fontWeight:400, color:'#94a3b8', fontSize:'12px' }}>(used for ML bias prediction)</span>
+                </div>
+                {[['tenureScore','Tenure Score'],['kpiScore','KPI Score'],['peerScore','Peer Score']].map(([k,label]) => (
+                  <div key={k} style={{ marginBottom:'10px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px',
+                      color:'#374151', marginBottom:'4px' }}>
+                      <span>{label}</span>
+                      <span style={{ fontWeight:600, color:'#14b8a6' }}>{kpi[k].toFixed(2)}</span>
+                    </div>
+                    <input type="range" min="0" max="1" step="0.05" value={kpi[k]}
+                      onChange={e => setK(k, parseFloat(e.target.value))}
+                      style={{ width:'100%', accentColor:'#14b8a6' }} />
+                  </div>
+                ))}
+                <div style={{ fontSize:'11px', color:'#94a3b8', marginTop:'4px' }}>
+                  Predicted rating = (Tenure×0.3 + KPI×0.5 + Peer×0.2) × 4 + 1
+                </div>
+              </div>
+              <button type="submit" style={{ marginTop:'16px', background:'#14b8a6', color:'#fff',
+                border:'none', borderRadius:'8px', padding:'10px 24px', fontSize:'14px',
+                fontWeight:600, cursor:'pointer', width:'100%' }}>
+                Analyse & Submit Evaluation
+              </button>
+            </form>
+          </Card>
+        </div>
+      );
+    }
+
+    // ── END MODULE 1 ──
+
+    // ══════════════════════════════════════════════
+    // MODULE 2 — ANALYTICS DASHBOARD
+    // ══════════════════════════════════════════════
+
+    function AnalyticsDashboard({ evaluations }) {
+      const metrics = useMemo(() => computeFairnessMetrics(evaluations), [evaluations]);
+
+      // 1. Rating Distribution by gender + department
+      const ratingDistData = useMemo(() => {
+        const genders = ['Male', 'Female'];
+        const colors  = ['#3b82f6', '#ec4899'];
+        return {
+          labels: DEPARTMENTS,
+          datasets: genders.map((g, i) => ({
+            label: g,
+            backgroundColor: colors[i] + 'cc',
+            data: DEPARTMENTS.map(dept => {
+              const arr = evaluations.filter(e => e.department === dept && e.gender === g);
+              return arr.length ? (arr.reduce((s, e) => s + e.rating, 0) / arr.length).toFixed(2) : 0;
+            }),
+          })),
+        };
+      }, [evaluations]);
+
+      // 2. Evaluator consistency
+      const evaluatorData = useMemo(() => {
+        return {
+          labels: EVALUATORS,
+          datasets: [{
+            label: 'Avg Rating',
+            backgroundColor: ['#22c55ecc','#ef4444cc','#f59e0bcc'],
+            data: EVALUATORS.map(mgr => {
+              const arr = evaluations.filter(e => e.evaluatorId === mgr);
+              if (!arr.length) return 0;
+              const avg = arr.reduce((s,e) => s + e.rating, 0) / arr.length;
+              return parseFloat(avg.toFixed(2));
+            }),
+          }],
+        };
+      }, [evaluations]);
+
+      const evaluatorStdDev = useMemo(() => EVALUATORS.map(mgr => {
+        const arr = evaluations.filter(e => e.evaluatorId === mgr);
+        if (!arr.length) return 0;
+        const avg = arr.reduce((s,e) => s + e.rating, 0) / arr.length;
+        const variance = arr.reduce((s,e) => s + Math.pow(e.rating - avg, 2), 0) / arr.length;
+        return Math.sqrt(variance).toFixed(2);
+      }), [evaluations]);
+
+      // 3. Sentiment by demographic group
+      const sentimentData = useMemo(() => {
+        const groups = ['Male', 'Female', 'Non-binary'];
+        return {
+          labels: groups,
+          datasets: [{
+            label: 'Avg Sentiment',
+            backgroundColor: groups.map(g => {
+              const arr = evaluations.filter(e => e.gender === g);
+              if (!arr.length) return '#94a3b8';
+              const avg = arr.reduce((s,e) => s + e.sentiment, 0) / arr.length;
+              return avg >= 0 ? '#22c55ecc' : '#ef4444cc';
+            }),
+            data: groups.map(g => {
+              const arr = evaluations.filter(e => e.gender === g);
+              if (!arr.length) return 0;
+              return parseFloat((arr.reduce((s,e) => s + e.sentiment, 0) / arr.length).toFixed(3));
+            }),
+          }],
+        };
+      }, [evaluations]);
+
+      // 4. Heatmap: ethnicity rows × department cols, value = deviation from company mean
+      const companyMean = useMemo(() =>
+        evaluations.reduce((s,e) => s + e.rating, 0) / evaluations.length
+      , [evaluations]);
+
+      const heatmapData = useMemo(() => {
+        return ETHNICITIES.map(eth =>
+          DEPARTMENTS.map(dept => {
+            const arr = evaluations.filter(e => e.ethnicity === eth && e.department === dept);
+            if (!arr.length) return null;
+            return parseFloat((arr.reduce((s,e) => s + e.rating, 0) / arr.length - companyMean).toFixed(2));
+          })
+        );
+      }, [evaluations, companyMean]);
+
+      const heatColor = (val) => {
+        if (val === null) return '#f1f5f9';
+        const abs = Math.min(Math.abs(val), 2);
+        if (val > 0.2) return `rgba(34,197,94,${0.2 + abs * 0.3})`;
+        if (val < -0.2) return `rgba(239,68,68,${0.2 + abs * 0.3})`;
+        return '#fef9c3';
+      };
+
+      // 5. Fairness metric cards config
+      const fairnessCards = [
+        {
+          label: 'Demographic Parity Difference',
+          value: metrics.demographicParityDiff?.toFixed(2) ?? '—',
+          threshold: '< 0.20',
+          status: !metrics.demographicParityDiff ? 'fair'
+            : metrics.demographicParityDiff < 0.2 ? 'fair'
+            : metrics.demographicParityDiff < 0.4 ? 'risk' : 'biased',
+          desc: 'Male avg: ' + (metrics.maleAvg?.toFixed(2) ?? '—') + '  Female avg: ' + (metrics.femaleAvg?.toFixed(2) ?? '—'),
+        },
+        {
+          label: 'Disparate Impact Ratio',
+          value: metrics.disparateImpactRatio?.toFixed(2) ?? '—',
+          threshold: '≥ 0.80',
+          status: !metrics.disparateImpactRatio ? 'fair'
+            : metrics.disparateImpactRatio >= 0.85 ? 'fair'
+            : metrics.disparateImpactRatio >= 0.80 ? 'risk' : 'biased',
+          desc: 'Female avg / Male avg rating ratio',
+        },
+        {
+          label: 'Equal Opportunity Difference',
+          value: metrics.equalOpportunityDiff?.toFixed(2) ?? '—',
+          threshold: '< 0.10',
+          status: !metrics.equalOpportunityDiff ? 'fair'
+            : metrics.equalOpportunityDiff < 0.10 ? 'fair'
+            : metrics.equalOpportunityDiff < 0.20 ? 'risk' : 'biased',
+          desc: 'TPR male: ' + (metrics.maleTPR?.toFixed(2) ?? '—') + '  TPR female: ' + (metrics.femaleTPR?.toFixed(2) ?? '—'),
+        },
+      ];
+
+      return (
+        <div style={{ padding:'24px' }}>
+          <h2 style={{ margin:'0 0 20px', fontSize:'20px', color:'#1e293b' }}>📊 Analytics Dashboard</h2>
+
+          {/* Fairness Metric Cards */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'16px', marginBottom:'20px' }}>
+            {fairnessCards.map(c => (
+              <Card key={c.label} style={{ margin:0 }}>
+                <div style={{ fontSize:'12px', color:'#64748b', marginBottom:'6px' }}>{c.label}</div>
+                <div style={{ display:'flex', alignItems:'baseline', gap:'10px', marginBottom:'8px' }}>
+                  <span style={{ fontSize:'28px', fontWeight:700, color:'#1e293b' }}>{c.value}</span>
+                  <span style={{ fontSize:'12px', color:'#94a3b8' }}>threshold {c.threshold}</span>
+                </div>
+                <StatusBadge status={c.status} />
+                <div style={{ fontSize:'12px', color:'#64748b', marginTop:'8px' }}>{c.desc}</div>
+              </Card>
+            ))}
+          </div>
+
+          {/* Charts row */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'20px', marginBottom:'20px' }}>
+            <Card title="Rating Distribution by Gender &amp; Department">
+              <ChartCanvas chartData={ratingDistData} chartType="bar"
+                chartOptions={{ scales: { x: { stacked:false }, y: { min:0, max:5, title:{ display:true, text:'Avg Rating' } } } }} />
+            </Card>
+            <Card title="Evaluator Consistency (Avg Rating)">
+              <ChartCanvas chartData={evaluatorData} chartType="bar"
+                chartOptions={{ indexAxis:'y', scales: { x: { min:0, max:5 } },
+                  plugins: { legend:{ display:false } } }} />
+              <div style={{ display:'flex', gap:'16px', marginTop:'12px' }}>
+                {EVALUATORS.map((mgr, i) => (
+                  <div key={mgr} style={{ fontSize:'12px', color:'#64748b' }}>
+                    {mgr}: σ = <strong style={{ color: parseFloat(evaluatorStdDev[i]) > 1.0 ? '#ef4444' : '#22c55e' }}>
+                      {evaluatorStdDev[i]}
+                    </strong>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'20px' }}>
+            <Card title="Sentiment Analysis by Gender Group">
+              <ChartCanvas chartData={sentimentData} chartType="bar"
+                chartOptions={{ scales: { y: { min:-1, max:1, title:{ display:true, text:'Avg Sentiment' } } },
+                  plugins: { legend:{ display:false } } }} />
+            </Card>
+            <Card title="Demographic Disparity Heatmap (Rating Deviation from Mean)">
+              <div style={{ overflowX:'auto' }}>
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ padding:'6px 8px', textAlign:'left', color:'#64748b', fontWeight:600 }}>Ethnicity</th>
+                      {DEPARTMENTS.map(d => (
+                        <th key={d} style={{ padding:'6px 8px', textAlign:'center', color:'#64748b', fontWeight:600 }}>{d}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ETHNICITIES.map((eth, ri) => (
+                      <tr key={eth}>
+                        <td style={{ padding:'6px 8px', fontWeight:600, color:'#374151' }}>{eth}</td>
+                        {heatmapData[ri].map((val, ci) => (
+                          <td key={ci} style={{ padding:'6px 8px', textAlign:'center',
+                            background: heatColor(val), borderRadius:'4px', fontWeight: val !== null ? 600 : 400,
+                            color: val === null ? '#94a3b8' : Math.abs(val) > 0.2 ? '#1e293b' : '#374151' }}>
+                            {val === null ? '—' : (val > 0 ? '+' : '') + val}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ fontSize:'11px', color:'#94a3b8', marginTop:'8px' }}>
+                Company mean rating: {companyMean.toFixed(2)} | Green = above mean, Red = below mean
+              </div>
+            </Card>
+          </div>
+        </div>
+      );
+    }
+
+    // ── MODULES 2–6 WILL BE ADDED BELOW ──
+
+    // ══════════════════════════════════════════════
+    // MODULE 3 — ML BIAS PREDICTOR
+    // ══════════════════════════════════════════════
+
+    function MLPredictor({ evaluations, navigateToXAI }) {
+      const [loaded, setLoaded] = React.useState(false);
+      const [sortKey, setSortKey] = React.useState('ratingDeviation');
+      const [sortDir, setSortDir] = React.useState('desc');
+      const [filterEval, setFilterEval] = React.useState('All');
+      const [filterDept, setFilterDept] = React.useState('All');
+      const [flaggedOnly, setFlaggedOnly] = React.useState(false);
+
+      const handleLoad = () => setLoaded(true);
+
+      const toggleSort = (key) => {
+        if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+        else { setSortKey(key); setSortDir('desc'); }
+      };
+
+      const filtered = useMemo(() => {
+        if (!loaded) return [];
+        let rows = [...evaluations];
+        if (filterEval !== 'All') rows = rows.filter(e => e.evaluatorId === filterEval);
+        if (filterDept !== 'All') rows = rows.filter(e => e.department === filterDept);
+        if (flaggedOnly) rows = rows.filter(e => e.flagged);
+        rows.sort((a, b) => {
+          const av = a[sortKey], bv = b[sortKey];
+          const diff = typeof av === 'number' ? av - bv : String(av).localeCompare(String(bv));
+          return sortDir === 'asc' ? diff : -diff;
+        });
+        return rows;
+      }, [loaded, evaluations, filterEval, filterDept, flaggedOnly, sortKey, sortDir]);
+
+      const flaggedAll = evaluations.filter(e => e.flagged);
+      const biasEval = useMemo(() => {
+        if (!flaggedAll.length) return 'N/A';
+        const counts = {};
+        flaggedAll.forEach(e => counts[e.evaluatorId] = (counts[e.evaluatorId]||0) + 1);
+        return Object.entries(counts).sort((a,b) => b[1]-a[1])[0][0];
+      }, [flaggedAll]);
+      const biasDept = useMemo(() => {
+        if (!flaggedAll.length) return 'N/A';
+        const counts = {};
+        flaggedAll.forEach(e => counts[e.department] = (counts[e.department]||0) + 1);
+        return Object.entries(counts).sort((a,b) => b[1]-a[1])[0][0];
+      }, [flaggedAll]);
+
+      const thStyle = (k) => ({
+        padding:'10px 12px', textAlign:'left', fontSize:'12px', fontWeight:600,
+        color: sortKey === k ? '#14b8a6' : '#64748b', cursor:'pointer',
+        background:'#f8fafc', borderBottom:'2px solid #e2e8f0', whiteSpace:'nowrap',
+        userSelect:'none',
+      });
+      const tdStyle = { padding:'10px 12px', fontSize:'13px', color:'#1e293b',
+        borderBottom:'1px solid #f1f5f9', verticalAlign:'middle' };
+
+      return (
+        <div style={{ padding:'24px' }}>
+          <h2 style={{ margin:'0 0 20px', fontSize:'20px', color:'#1e293b' }}>🤖 ML Bias Predictor</h2>
+          {!loaded ? (
+            <Card>
+              <p style={{ color:'#64748b', fontSize:'14px', marginTop:0 }}>
+                Simulate loading an evaluation dataset CSV. The ML model will predict expected ratings
+                from objective KPI signals and flag deviations indicating potential bias.
+              </p>
+              <button onClick={handleLoad}
+                style={{ background:'#14b8a6', color:'#fff', border:'none', borderRadius:'8px',
+                  padding:'10px 24px', fontSize:'14px', fontWeight:600, cursor:'pointer' }}>
+                📂 Load Evaluation Dataset (Simulated CSV Upload)
+              </button>
+            </Card>
+          ) : (
+            <>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'16px', marginBottom:'20px' }}>
+                {[
+                  ['Total Records', evaluations.length, '#3b82f6'],
+                  ['Flagged for Bias', flaggedAll.length, '#ef4444'],
+                  ['Most Biased Evaluator', biasEval, '#f59e0b'],
+                  ['Most Biased Department', biasDept, '#8b5cf6'],
+                ].map(([l,v,c]) => (
+                  <Card key={l} style={{ margin:0, textAlign:'center' }}>
+                    <div style={{ fontSize:'22px', fontWeight:700, color:c }}>{v}</div>
+                    <div style={{ fontSize:'12px', color:'#64748b', marginTop:'4px' }}>{l}</div>
+                  </Card>
+                ))}
+              </div>
+              <Card>
+                <div style={{ display:'flex', gap:'12px', flexWrap:'wrap', alignItems:'center' }}>
+                  <div>
+                    <span style={{ fontSize:'12px', color:'#64748b', marginRight:'6px' }}>Evaluator:</span>
+                    <select style={{ padding:'5px 8px', borderRadius:'5px', border:'1px solid #e2e8f0',
+                      fontSize:'13px' }} value={filterEval} onChange={e => setFilterEval(e.target.value)}>
+                      <option>All</option>{EVALUATORS.map(e => <option key={e}>{e}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <span style={{ fontSize:'12px', color:'#64748b', marginRight:'6px' }}>Department:</span>
+                    <select style={{ padding:'5px 8px', borderRadius:'5px', border:'1px solid #e2e8f0',
+                      fontSize:'13px' }} value={filterDept} onChange={e => setFilterDept(e.target.value)}>
+                      <option>All</option>{DEPARTMENTS.map(d => <option key={d}>{d}</option>)}
+                    </select>
+                  </div>
+                  <label style={{ display:'flex', alignItems:'center', gap:'6px', fontSize:'13px', cursor:'pointer' }}>
+                    <input type="checkbox" checked={flaggedOnly} onChange={e => setFlaggedOnly(e.target.checked)} />
+                    Flagged only
+                  </label>
+                  <span style={{ marginLeft:'auto', fontSize:'13px', color:'#94a3b8' }}>
+                    {filtered.length} records shown
+                  </span>
+                </div>
+              </Card>
+              <Card>
+                <div style={{ overflowX:'auto' }}>
+                  <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                    <thead>
+                      <tr>
+                        {[['id','ID'],['employeeId','Employee'],['department','Dept'],
+                          ['evaluatorId','Evaluator'],['rating','Actual'],
+                          ['predictedRating','Predicted'],['ratingDeviation','Deviation'],
+                          ['flagged','Flag']].map(([k,l]) => (
+                          <th key={k} style={thStyle(k)} onClick={() => toggleSort(k)}>
+                            {l}{sortKey === k ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                          </th>
+                        ))}
+                        <th style={{ ...thStyle('_'), cursor:'default' }}>Explain</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.map(e => (
+                        <tr key={e.id} style={{ background: e.flagged ? '#fff7f7' : 'transparent' }}>
+                          <td style={tdStyle}><strong>{e.id}</strong></td>
+                          <td style={tdStyle}>{e.employeeId}</td>
+                          <td style={tdStyle}>{e.department}</td>
+                          <td style={tdStyle}>{e.evaluatorId}</td>
+                          <td style={{ ...tdStyle, textAlign:'center' }}>
+                            <strong style={{ color:'#3b82f6' }}>{e.rating}</strong>
+                          </td>
+                          <td style={{ ...tdStyle, textAlign:'center' }}>
+                            <strong style={{ color:'#8b5cf6' }}>{e.predictedRating}</strong>
+                          </td>
+                          <td style={{ ...tdStyle, textAlign:'center' }}>
+                            <strong style={{ color: e.ratingDeviation > 0 ? '#22c55e' : '#ef4444' }}>
+                              {e.ratingDeviation > 0 ? '+' : ''}{e.ratingDeviation}
+                            </strong>
+                          </td>
+                          <td style={{ ...tdStyle, textAlign:'center' }}>
+                            {e.flagged
+                              ? <span style={{ background:'#fee2e2', color:'#991b1b', borderRadius:'10px',
+                                  padding:'2px 8px', fontSize:'12px', fontWeight:600 }}>⚠️ Flagged</span>
+                              : <span style={{ background:'#dcfce7', color:'#166534', borderRadius:'10px',
+                                  padding:'2px 8px', fontSize:'12px', fontWeight:600 }}>✅ Clear</span>
+                            }
+                          </td>
+                          <td style={{ ...tdStyle, textAlign:'center' }}>
+                            {e.flagged && (
+                              <button onClick={() => navigateToXAI(e.id)}
+                                style={{ background:'#f1f5f9', color:'#14b8a6', border:'1px solid #e2e8f0',
+                                  borderRadius:'5px', padding:'4px 10px', fontSize:'12px', cursor:'pointer',
+                                  fontWeight:600 }}>
+                                Explain →
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </>
+          )}
+        </div>
+      );
+    }
+
+    // ══════════════════════════════════════════════
+    // MODULE 4 — NLP FEEDBACK ANALYZER
+    // ══════════════════════════════════════════════
+
+    function NLPAnalyzer() {
+      const [text, setText] = React.useState('');
+      const [result, setResult] = React.useState(null);
+
+      const SAMPLE = `Sarah is emotional and can be bossy with junior staff at times. While she is warm and likeable, she sometimes lacks the confidence needed for senior presentations. Recently her attitude has affected team morale.`;
+
+      const analyze = () => {
+        if (!text.trim()) return;
+        setResult(analyzeNLP(text));
+      };
+
+      const toneColor = { Constructive: '#22c55e', Critical: '#ef4444', Vague: '#f59e0b' };
+
+      const catData = result ? {
+        labels: Object.keys(result.categories),
+        datasets: [{
+          label: 'Keywords matched',
+          backgroundColor: ['#22c55ecc','#ef4444cc','#3b82f6cc','#8b5cf6cc'],
+          data: Object.values(result.categories),
+        }],
+      } : null;
+
+      const biasTypeColor = {
+        'Demographic / Cognitive': '#ef4444',
+        'Cognitive': '#f59e0b',
+        'None': '#22c55e',
+      };
+
+      return (
+        <div style={{ padding:'24px', maxWidth:'900px' }}>
+          <h2 style={{ margin:'0 0 20px', fontSize:'20px', color:'#1e293b' }}>🔍 NLP Feedback Analyzer</h2>
+          <Card>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px' }}>
+              <label style={{ fontSize:'13px', fontWeight:600, color:'#374151' }}>Paste performance review text:</label>
+              <button onClick={() => setText(SAMPLE)}
+                style={{ background:'#f1f5f9', color:'#14b8a6', border:'1px solid #e2e8f0',
+                  borderRadius:'5px', padding:'4px 10px', fontSize:'12px', cursor:'pointer' }}>
+                Load Sample Text
+              </button>
+            </div>
+            <textarea
+              style={{ width:'100%', height:'120px', padding:'10px', borderRadius:'6px',
+                border:'1px solid #e2e8f0', fontSize:'14px', resize:'vertical', boxSizing:'border-box' }}
+              placeholder="Paste any performance review text here..."
+              value={text} onChange={e => { setText(e.target.value); setResult(null); }}
+            />
+            <button onClick={analyze}
+              style={{ marginTop:'12px', background:'#14b8a6', color:'#fff', border:'none',
+                borderRadius:'8px', padding:'9px 22px', fontSize:'14px', fontWeight:600, cursor:'pointer' }}>
+              Analyse for Bias
+            </button>
+          </Card>
+
+          {result && (
+            <>
+              <Card title="Highlighted Feedback">
+                <p style={{ fontSize:'12px', color:'#94a3b8', marginTop:0 }}>
+                  Hover over coloured phrases to see bias explanations.
+                </p>
+                <div style={{ background:'#f8fafc', borderRadius:'8px', padding:'16px', fontSize:'14px',
+                  lineHeight:'1.9', color:'#1e293b' }}>
+                  <HighlightedFeedback text={text} flags={result.biasFlags} />
+                </div>
+                <div style={{ display:'flex', gap:'12px', flexWrap:'wrap', marginTop:'12px' }}>
+                  {Object.entries(BIAS_DICT).map(([k,v]) => (
+                    <span key={k} style={{ background:v.color, border:`1px solid ${v.borderColor}`,
+                      borderRadius:'4px', padding:'2px 8px', fontSize:'12px' }}>{v.label}</span>
+                  ))}
+                </div>
+              </Card>
+
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'16px', marginBottom:'20px' }}>
+                <Card style={{ margin:0, textAlign:'center' }}>
+                  <div style={{ fontSize:'12px', color:'#64748b', marginBottom:'8px' }}>Bias Type Detected</div>
+                  <span style={{ background: biasTypeColor[result.biasType] + '22',
+                    color: biasTypeColor[result.biasType], borderRadius:'8px',
+                    padding:'6px 14px', fontSize:'14px', fontWeight:700 }}>
+                    {result.biasType}
+                  </span>
+                </Card>
+                <Card style={{ margin:0, textAlign:'center' }}>
+                  <div style={{ fontSize:'12px', color:'#64748b', marginBottom:'8px' }}>Tone</div>
+                  <span style={{ background: toneColor[result.tone] + '22',
+                    color: toneColor[result.tone], borderRadius:'8px',
+                    padding:'6px 14px', fontSize:'14px', fontWeight:700 }}>
+                    {result.tone}
+                  </span>
+                </Card>
+                <Card style={{ margin:0, textAlign:'center' }}>
+                  <div style={{ fontSize:'12px', color:'#64748b', marginBottom:'8px' }}>Bias Score</div>
+                  <span style={{ fontSize:'28px', fontWeight:700,
+                    color: result.biasScore <= 30 ? '#22c55e' : result.biasScore <= 60 ? '#f59e0b' : '#ef4444' }}>
+                    {result.biasScore}<span style={{ fontSize:'14px', color:'#94a3b8' }}>/100</span>
+                  </span>
+                </Card>
+              </div>
+
+              {result.biasFlags.length > 0 && (
+                <Card title="Problematic Phrases">
+                  {result.biasFlags.map((f, i) => (
+                    <div key={i} style={{ display:'flex', gap:'12px', padding:'10px',
+                      background: f.color, borderRadius:'8px', marginBottom:'8px',
+                      border:`1px solid ${f.borderColor}` }}>
+                      <span style={{ fontWeight:700, minWidth:'100px', fontSize:'13px' }}>"{f.phrase}"</span>
+                      <div style={{ fontSize:'13px' }}>
+                        <strong>{f.label}</strong> — {f.explanation}
+                      </div>
+                    </div>
+                  ))}
+                </Card>
+              )}
+
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'20px' }}>
+                <Card title="Feedback Category Breakdown">
+                  <ChartCanvas chartData={catData} chartType="bar"
+                    chartOptions={{ scales: { y: { beginAtZero:true, ticks:{ stepSize:1 } } },
+                      plugins: { legend:{ display:false } } }} height={200} />
+                </Card>
+                <Card title="Debiased Rewrite Suggestion">
+                  <div style={{ background:'#f0fdf4', border:'1px solid #86efac', borderRadius:'8px',
+                    padding:'14px', fontSize:'14px', lineHeight:'1.8', color:'#1e293b', marginBottom:'10px' }}>
+                    {generateDebias(text)}
+                  </div>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(generateDebias(text))}
+                    style={{ background:'#f1f5f9', color:'#374151', border:'1px solid #e2e8f0',
+                      borderRadius:'5px', padding:'5px 12px', fontSize:'12px', cursor:'pointer' }}>
+                    📋 Copy Rewrite
+                  </button>
+                </Card>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
+
+    // ══════════════════════════════════════════════
+    // MODULE 5 — FAIRNESS-AWARE FRAMEWORK PANEL
+    // ══════════════════════════════════════════════
+
+    const CONSTRAINT_DEFS = [
+      { key:'dp',  label:'Demographic Parity Constraint',
+        desc:'Forces equal average predicted outcomes across gender groups, penalising models that produce systematically different predictions for different demographic groups.' },
+      { key:'eo',  label:'Equalized Odds',
+        desc:'Requires equal true positive and false positive rates across groups. Prevents the model from being simultaneously accurate for one group and inaccurate for another.' },
+      { key:'if_', label:'Individual Fairness',
+        desc:'Similar individuals should receive similar predictions regardless of their demographic group. Reduces reliance on group-level attributes in decision-making.' },
+      { key:'cal', label:'Calibration',
+        desc:'Predicted probabilities should reflect true outcome frequencies equally across groups. Prevents systematic over- or under-confidence for specific demographics.' },
+    ];
+
+    function FairnessFramework({ evaluations }) {
+      const [reweighted, setReweighted] = React.useState(false);
+      const [constraints, setConstraints] = React.useState({ dp:false, eo:false, if_:false, cal:false });
+      const [thresholds, setThresholds] = React.useState({ Male:0.5, Female:0.5, 'Non-binary':0.5 });
+      const [auditResolution, setAuditResolution] = React.useState({});
+
+      const toggleConstraint = (key) => setConstraints(c => ({ ...c, [key]: !c[key] }));
+      const activeCount = Object.values(constraints).filter(Boolean).length;
+      const modelAccuracy = (84 + activeCount * 1.5 - (activeCount > 2 ? 2 : 0)).toFixed(1);
+
+      const genderCounts = useMemo(() => {
+        const actual = {};
+        GENDERS.forEach(g => { actual[g] = evaluations.filter(e => e.gender === g).length; });
+        const target = Math.round(evaluations.length / 3);
+        const balanced = { Male: target, Female: target, 'Non-binary': target };
+        return { actual, balanced };
+      }, [evaluations]);
+
+      const genderDistData = (data) => ({
+        labels: GENDERS,
+        datasets: [{
+          label: 'Count',
+          backgroundColor: ['#3b82f6cc','#ec4899cc','#8b5cf6cc'],
+          data: GENDERS.map(g => data[g] || 0),
+        }],
+      });
+
+      const outcomeRates = useMemo(() => {
+        return Object.fromEntries(
+          GENDERS.map(g => {
+            const arr = evaluations.filter(e => e.gender === g);
+            const baseRate = arr.filter(e => e.rating >= 4).length / (arr.length || 1);
+            const t = thresholds[g];
+            const adjusted = Math.max(0, Math.min(1, baseRate + (0.5 - t) * 0.8));
+            return [g, adjusted];
+          })
+        );
+      }, [evaluations, thresholds]);
+
+      const flagged = useMemo(() => evaluations.filter(e => e.flagged).slice(0,15), [evaluations]);
+
+      const severityLabel = (e) => {
+        const abs = Math.abs(e.ratingDeviation);
+        if (abs >= 2.0) return { text:'High',   color:'#ef4444', bg:'#fee2e2' };
+        if (abs >= 1.0) return { text:'Medium', color:'#f59e0b', bg:'#fef9c3' };
+        return             { text:'Low',    color:'#22c55e', bg:'#dcfce7' };
+      };
+
+      const pipelineStepStyle = (active) => ({
+        background: '#fff', borderRadius:'10px', padding:'16px',
+        border: `2px solid ${active ? '#14b8a6' : '#e2e8f0'}`,
+      });
+      const arrowStyle = { display:'flex', alignItems:'center', justifyContent:'center', fontSize:'22px', color:'#14b8a6' };
+
+      return (
+        <div style={{ padding:'24px' }}>
+          <h2 style={{ margin:'0 0 20px', fontSize:'20px', color:'#1e293b' }}>📋 Fairness-Aware Framework</h2>
+
+          <Card title="Bias Mitigation Pipeline">
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 32px 1fr 32px 1fr', alignItems:'start', gap:'0' }}>
+
+              <div style={pipelineStepStyle(reweighted)}>
+                <div style={{ fontSize:'13px', fontWeight:700, color:'#14b8a6', marginBottom:'8px',
+                  textTransform:'uppercase', letterSpacing:'0.5px' }}>① Pre-processing</div>
+                <div style={{ marginBottom:'12px' }}>
+                  <ChartCanvas
+                    chartData={genderDistData(reweighted ? genderCounts.balanced : genderCounts.actual)}
+                    chartType="bar"
+                    chartOptions={{ scales: { y: { beginAtZero:true } },
+                      plugins: { legend:{ display:false } } }}
+                    height={140} />
+                </div>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <span style={{ fontSize:'12px', color:'#64748b' }}>Data Reweighting:</span>
+                  <button onClick={() => setReweighted(r => !r)}
+                    style={{ background: reweighted ? '#14b8a6' : '#f1f5f9',
+                      color: reweighted ? '#fff' : '#374151',
+                      border:'none', borderRadius:'6px', padding:'5px 12px',
+                      fontSize:'12px', cursor:'pointer', fontWeight:600 }}>
+                    {reweighted ? '✅ Applied' : 'Apply'}
+                  </button>
+                </div>
+              </div>
+
+              <div style={arrowStyle}>→</div>
+
+              <div style={pipelineStepStyle(activeCount > 0)}>
+                <div style={{ fontSize:'13px', fontWeight:700, color:'#14b8a6', marginBottom:'8px',
+                  textTransform:'uppercase', letterSpacing:'0.5px' }}>② In-processing</div>
+                {CONSTRAINT_DEFS.map(c => (
+                  <div key={c.key} style={{ display:'flex', alignItems:'flex-start', gap:'8px',
+                    marginBottom:'10px', padding:'8px', background:'#f8fafc', borderRadius:'6px' }}>
+                    <input type="checkbox" checked={constraints[c.key]}
+                      onChange={() => toggleConstraint(c.key)}
+                      style={{ marginTop:'2px', cursor:'pointer', accentColor:'#14b8a6' }} />
+                    <div>
+                      <div style={{ fontSize:'13px', fontWeight:600, color:'#374151' }}>{c.label}</div>
+                      <div style={{ fontSize:'10px', color:'#64748b', lineHeight:'1.4',
+                        display:'-webkit-box', WebkitLineClamp:'3', WebkitBoxOrient:'vertical', overflow:'hidden' }}>{c.desc}</div>
+                    </div>
+                  </div>
+                ))}
+                <div style={{ background:'#f0fdf4', borderRadius:'6px', padding:'8px 12px',
+                  fontSize:'13px', marginTop:'8px' }}>
+                  Simulated model accuracy: <strong style={{ color:'#22c55e' }}>{modelAccuracy}%</strong>
+                </div>
+              </div>
+
+              <div style={arrowStyle}>→</div>
+
+              <div style={pipelineStepStyle(Object.values(thresholds).some(t => t !== 0.5))}>
+                <div style={{ fontSize:'13px', fontWeight:700, color:'#14b8a6', marginBottom:'8px',
+                  textTransform:'uppercase', letterSpacing:'0.5px' }}>③ Post-processing</div>
+                <p style={{ fontSize:'12px', color:'#64748b', marginTop:0 }}>
+                  Adjust decision thresholds per demographic group. Higher threshold = fewer high-rating outcomes.
+                </p>
+                {GENDERS.map(g => (
+                  <div key={g} style={{ marginBottom:'12px' }}>
+                    <div style={{ fontSize:'12px', fontWeight:600, color:'#374151', marginBottom:'2px',
+                      whiteSpace:'nowrap' }}>{g}</div>
+                    <div style={{ fontSize:'11px', color:'#14b8a6', marginBottom:'4px' }}>
+                      t={thresholds[g].toFixed(2)} → {(outcomeRates[g] * 100).toFixed(0)}% outcome
+                    </div>
+                    <input type="range" min="0.3" max="0.7" step="0.05"
+                      value={thresholds[g]}
+                      onChange={e => setThresholds(t => ({ ...t, [g]: parseFloat(e.target.value) }))}
+                      style={{ width:'100%', accentColor:'#14b8a6' }} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Card>
+
+          <Card title="Audit Log — Flagged Evaluations">
+            <div style={{ overflowX:'auto' }}>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'13px' }}>
+                <thead>
+                  <tr style={{ background:'#f8fafc' }}>
+                    {['ID','Evaluator','Dept','Timestamp','Bias Type','Severity','Resolution'].map(h => (
+                      <th key={h} style={{ padding:'9px 12px', textAlign:'left', fontSize:'12px',
+                        fontWeight:600, color:'#64748b', borderBottom:'2px solid #e2e8f0' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {flagged.map(e => {
+                    const sev = severityLabel(e);
+                    const resKey = e.id;
+                    return (
+                      <tr key={e.id} style={{ borderBottom:'1px solid #f1f5f9' }}>
+                        <td style={{ padding:'9px 12px' }}><strong>{e.id}</strong></td>
+                        <td style={{ padding:'9px 12px' }}>{e.evaluatorId}</td>
+                        <td style={{ padding:'9px 12px' }}>{e.department}</td>
+                        <td style={{ padding:'9px 12px', color:'#64748b' }}>{e.timestamp}</td>
+                        <td style={{ padding:'9px 12px' }}>
+                          <span style={{ fontSize:'12px', color: e.biasType === 'None' ? '#22c55e' : '#ef4444' }}>
+                            {e.biasType !== 'None' ? e.biasType : (Math.abs(e.ratingDeviation) >= 1.5 ? 'Systemic' : 'Statistical')}
+                          </span>
+                        </td>
+                        <td style={{ padding:'9px 12px' }}>
+                          <span style={{ background:sev.bg, color:sev.color, borderRadius:'10px',
+                            padding:'2px 8px', fontSize:'12px', fontWeight:600 }}>{sev.text}</span>
+                        </td>
+                        <td style={{ padding:'9px 12px' }}>
+                          <select
+                            value={auditResolution[resKey] || 'Pending'}
+                            onChange={e2 => setAuditResolution(r => ({ ...r, [resKey]: e2.target.value }))}
+                            style={{ padding:'4px 8px', borderRadius:'5px', border:'1px solid #e2e8f0',
+                              fontSize:'12px', background:'#fff' }}>
+                            <option>Pending</option>
+                            <option>Under Review</option>
+                            <option>Resolved</option>
+                          </select>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      );
+    }
+
+    // ══════════════════════════════════════════════
+    // MODULE 6 — XAI EXPLAINABILITY VIEW
+    // ══════════════════════════════════════════════
+
+    function XAIView({ evaluations, selectedEvaluationId, setSelectedEvaluationId }) {
+      const flagged = useMemo(() => evaluations.filter(e => e.flagged), [evaluations]);
+      const [chosenId, setChosenId] = React.useState(null);
+
+      useEffect(() => {
+        if (selectedEvaluationId) setChosenId(selectedEvaluationId);
+        else if (flagged.length > 0 && !chosenId) setChosenId(flagged[0].id);
+      }, [selectedEvaluationId, flagged]);
+
+      const record = useMemo(() =>
+        evaluations.find(e => e.id === chosenId), [evaluations, chosenId]);
+
+      const featureImportance = useMemo(() => {
+        if (!record) return null;
+        const abs = Math.abs(record.ratingDeviation);
+        return [
+          { label:'Rating Deviation',     value: Math.min(1, abs / 2.5),           color:'#ef4444' },
+          { label:'Evaluator Pattern',     value: record.evaluatorId === 'MGR-C' ? 0.88 : record.evaluatorId === 'MGR-A' ? 0.82 : 0.78, color:'#f97316' },
+          { label:'Sentiment Score',       value: Math.min(1, Math.abs(record.sentiment) + 0.2), color:'#f59e0b' },
+          { label:'Keyword Bias Density',  value: Math.min(1, record.biasScore / 100), color:'#8b5cf6' },
+          { label:'Demographic Attribute', value: (record.gender === 'Female' && record.evaluatorId === 'MGR-C') ? 0.75 : 0.3, color:'#ec4899' },
+          { label:'Department Context',    value: 0.25, color:'#3b82f6' },
+        ].sort((a, b) => b.value - a.value);
+      }, [record]);
+
+      const fiChartData = useMemo(() => featureImportance ? ({
+        labels: featureImportance.map(f => f.label),
+        datasets: [{
+          label: 'Importance Score',
+          data: featureImportance.map(f => parseFloat(f.value.toFixed(3))),
+          backgroundColor: featureImportance.map(f => f.color + 'cc'),
+          borderColor:     featureImportance.map(f => f.color),
+          borderWidth: 1,
+        }],
+      }) : null, [featureImportance]);
+
+      const buildExplanation = (r) => {
+        if (!r) return '';
+        const parts = [];
+        if (Math.abs(r.ratingDeviation) > 0.8)
+          parts.push(`The actual rating (${r.rating}) deviates ${r.ratingDeviation > 0 ? 'above' : 'below'} the KPI-predicted rating (${r.predictedRating}) by ${Math.abs(r.ratingDeviation)} points.`);
+        if (r.evaluatorId === 'MGR-C' && r.gender === 'Female')
+          parts.push(`Evaluator MGR-C shows a systematic pattern of rating female employees significantly below their KPI-predicted scores while rating male employees with equivalent KPIs at or above prediction.`);
+        if (r.biasScore > 30)
+          parts.push(`The written feedback contains ${r.biasFlags.length} flagged phrase(s) — including ${r.biasFlags.slice(0,2).map(f => `"${f.phrase}"`).join(' and ')} — which ${r.biasFlags[0]?.label.toLowerCase() || 'indicate potential bias'}.`);
+        if (r.sentiment < -0.1)
+          parts.push(`The feedback sentiment score is negative (${r.sentiment.toFixed(2)}), which is disproportionately low compared to the overall dataset mean for this department.`);
+        return parts.length > 0 ? parts.join(' ') : `This evaluation was flagged because the actual rating deviates significantly (${r.ratingDeviation > 0 ? '+' : ''}${r.ratingDeviation}) from the objective KPI-based prediction (${r.predictedRating}).`;
+      };
+
+      return (
+        <div style={{ padding:'24px', maxWidth:'1000px' }}>
+          <h2 style={{ margin:'0 0 20px', fontSize:'20px', color:'#1e293b' }}>📈 XAI Explainability View</h2>
+
+          {flagged.length === 0 ? (
+            <Card><p style={{ color:'#64748b' }}>No flagged evaluations to explain. Run the ML Predictor first.</p></Card>
+          ) : (
+            <>
+              <Card>
+                <div style={{ display:'flex', alignItems:'center', gap:'12px' }}>
+                  <label style={{ fontSize:'13px', fontWeight:600, color:'#374151' }}>
+                    Select flagged evaluation:
+                  </label>
+                  <select
+                    value={chosenId || ''}
+                    onChange={e => { setChosenId(e.target.value); setSelectedEvaluationId(e.target.value); }}
+                    style={{ padding:'7px 12px', borderRadius:'6px', border:'1px solid #e2e8f0',
+                      fontSize:'14px', minWidth:'200px' }}>
+                    {flagged.map(e => (
+                      <option key={e.id} value={e.id}>
+                        {e.id} — {e.evaluatorId} | {e.department} | Dev: {e.ratingDeviation > 0 ? '+' : ''}{e.ratingDeviation}
+                      </option>
+                    ))}
+                  </select>
+                  {record && (
+                    <span style={{ marginLeft:'auto', fontSize:'13px', color:'#64748b' }}>
+                      Employee: <strong>{record.employeeId}</strong> | Gender: <strong>{record.gender}</strong> | Ethnicity: <strong>{record.ethnicity}</strong>
+                    </span>
+                  )}
+                </div>
+              </Card>
+
+              {record && (
+                <>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'20px' }}>
+                    <Card title="Feature Importance">
+                      <ChartCanvas chartData={fiChartData} chartType="bar"
+                        chartOptions={{ indexAxis:'y',
+                          scales: { x: { min:0, max:1, title:{ display:true, text:'Importance Score (0–1)' } } },
+                          plugins: { legend:{ display:false } } }}
+                        height={220} />
+                    </Card>
+                    <Card title="Plain-Language Explanation">
+                      <div style={{ background:'#fff7ed', border:'1px solid #fdba74', borderRadius:'8px',
+                        padding:'16px', fontSize:'14px', lineHeight:'1.8', color:'#1e293b' }}>
+                        {buildExplanation(record)}
+                      </div>
+                      <div style={{ marginTop:'12px', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+                        {[['Actual Rating', record.rating, '#3b82f6'],
+                          ['Predicted',     record.predictedRating, '#8b5cf6'],
+                          ['Deviation',     (record.ratingDeviation > 0 ? '+' : '') + record.ratingDeviation,
+                            record.ratingDeviation > 0 ? '#22c55e' : '#ef4444'],
+                          ['Bias Score',    record.biasScore + '/100', record.biasScore > 60 ? '#ef4444' : '#f59e0b'],
+                        ].map(([l,v,c]) => (
+                          <div key={l} style={{ background:'#f8fafc', borderRadius:'6px', padding:'8px 12px' }}>
+                            <div style={{ fontSize:'11px', color:'#94a3b8' }}>{l}</div>
+                            <div style={{ fontSize:'18px', fontWeight:700, color:c }}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </Card>
+                  </div>
+
+                  <Card title="Original vs. Debiased Feedback">
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'16px' }}>
+                      <div>
+                        <div style={{ fontSize:'12px', fontWeight:600, color:'#ef4444', marginBottom:'8px',
+                          textTransform:'uppercase', letterSpacing:'0.5px' }}>Original</div>
+                        <div style={{ background:'#fff7f7', border:'1px solid #fecaca', borderRadius:'8px',
+                          padding:'14px', fontSize:'14px', lineHeight:'1.8', color:'#1e293b' }}>
+                          <HighlightedFeedback text={record.feedback} flags={record.biasFlags} />
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize:'12px', fontWeight:600, color:'#22c55e', marginBottom:'8px',
+                          textTransform:'uppercase', letterSpacing:'0.5px' }}>Debiased</div>
+                        <div style={{ background:'#f0fdf4', border:'1px solid #86efac', borderRadius:'8px',
+                          padding:'14px', fontSize:'14px', lineHeight:'1.8', color:'#1e293b' }}>
+                          {generateDebias(record.feedback)}
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      );
+    }
+
+    // ══════════════════════════════════════════════
+    // APP SHELL
+    // ══════════════════════════════════════════════
+
+    const NAV_ITEMS = [
+      { id: 1, icon: '📝', label: 'Evaluation Form' },
+      { id: 2, icon: '📊', label: 'Analytics Dashboard' },
+      { id: 3, icon: '🤖', label: 'ML Bias Predictor' },
+      { id: 4, icon: '🔍', label: 'NLP Analyzer' },
+      { id: 5, icon: '📋', label: 'Fairness Framework' },
+      { id: 6, icon: '📈', label: 'XAI Explainability' },
+    ];
+
+    function TopNav({ evaluations, onGenerateReport }) {
+      const alertCount = evaluations ? evaluations.filter(e => e.flagged).length : 0;
+      return (
+        <div style={{ background: '#0f172a', height: '56px', display: 'flex', alignItems: 'center',
+          padding: '0 24px', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 50,
+          borderBottom: '1px solid #1e293b' }}>
+          <span style={{ color: '#14b8a6', fontWeight: 700, fontSize: '16px', letterSpacing: '-0.3px' }}>
+            ⚖ HR Bias Detection System
+          </span>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <span style={{ color: '#94a3b8', fontSize: '13px' }}>HR Manager</span>
+            {alertCount > 0 && (
+              <span style={{ background: '#ef4444', color: '#fff', borderRadius: '12px',
+                padding: '2px 9px', fontSize: '12px', fontWeight: 600 }}>
+                {alertCount} Alerts
+              </span>
+            )}
+            <button
+              onClick={onGenerateReport}
+              style={{ background: '#14b8a6', color: '#fff', border: 'none', borderRadius: '6px',
+                padding: '6px 14px', fontSize: '13px', cursor: 'pointer', fontWeight: 500 }}>
+              Generate Report
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    function SidebarButton({ item, activeModule, setActiveModule }) {
+      const [hovered, setHovered] = React.useState(false);
+      const isActive = activeModule === item.id;
+      return (
+        <button
+          onClick={() => setActiveModule(item.id)}
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '10px', width: '100%',
+            padding: '10px 16px', border: 'none', cursor: 'pointer', textAlign: 'left',
+            background: isActive ? '#14b8a620' : hovered ? '#ffffff0f' : 'transparent',
+            color: isActive ? '#14b8a6' : hovered ? '#e2e8f0' : '#94a3b8',
+            borderRight: isActive ? '3px solid #14b8a6' : '3px solid transparent',
+            fontSize: '14px', transition: 'all 0.15s',
+          }}>
+          <span>{item.icon}</span>
+          <span style={{ fontWeight: isActive ? 600 : 400 }}>{item.label}</span>
+        </button>
+      );
+    }
+
+    function Sidebar({ activeModule, setActiveModule }) {
+      return (
+        <div style={{ background: '#0f172a', width: '240px', minHeight: '100vh', paddingTop: '72px',
+          position: 'fixed', left: 0, top: 0, borderRight: '1px solid #1e293b' }}>
+          {NAV_ITEMS.map(item => (
+            <SidebarButton key={item.id} item={item} activeModule={activeModule} setActiveModule={setActiveModule} />
+          ))}
+        </div>
+      );
+    }
+
+    function App() {
+      const [activeModule, setActiveModule] = useState(1);
+      const [evaluations, setEvaluations] = useState(typeof INITIAL_EVALUATIONS !== 'undefined' ? INITIAL_EVALUATIONS : []);
+      const [selectedEvaluationId, setSelectedEvaluationId] = useState(null);
+
+      function generateReport() {
+        if (evaluations.length === 0) {
+          alert('No evaluations to report. Load or submit at least one evaluation first.');
+          return;
+        }
+        const flagged = evaluations.filter(e => e.flagged);
+        const metrics = typeof computeFairnessMetrics !== 'undefined' ? computeFairnessMetrics(evaluations) : {};
+        const date = new Date().toISOString().split('T')[0];
+        const lines = [
+          '═══════════════════════════════════════════════════',
+          '   HR BIAS DETECTION SYSTEM — FAIRNESS REPORT',
+          `   Generated: ${date}`,
+          '═══════════════════════════════════════════════════',
+          '',
+          `Total Evaluations Analysed: ${evaluations.length}`,
+          `Flagged for Bias: ${flagged.length} (${evaluations.length ? Math.round(flagged.length / evaluations.length * 100) : 0}%)`,
+          '',
+          '── FAIRNESS METRICS ──────────────────────────────',
+          `Demographic Parity Difference : ${metrics.demographicParityDiff?.toFixed(2) ?? 'N/A'}  (threshold < 0.20)`,
+          `Disparate Impact Ratio        : ${metrics.disparateImpactRatio?.toFixed(2) ?? 'N/A'}  (threshold >= 0.80)`,
+          `Equal Opportunity Difference  : ${metrics.equalOpportunityDiff?.toFixed(2) ?? 'N/A'}  (threshold < 0.10)`,
+          '',
+          '── EVALUATOR SUMMARY ────────────────────────────',
+          ...EVALUATORS.map(mgr => {
+            const evals = evaluations.filter(e => e.evaluatorId === mgr);
+            const avgRating = evals.length ? (evals.reduce((s, e) => s + e.rating, 0) / evals.length).toFixed(2) : 'N/A';
+            const flaggedCount = evals.filter(e => e.flagged).length;
+            return `${mgr}: ${evals.length} evaluations, avg rating ${avgRating}, ${flaggedCount} flagged`;
+          }),
+          '',
+          '── DEPARTMENT SUMMARY ───────────────────────────',
+          ...DEPARTMENTS.map(dept => {
+            const evals = evaluations.filter(e => e.department === dept);
+            const avg = evals.length ? (evals.reduce((s, e) => s + e.rating, 0) / evals.length).toFixed(2) : 'N/A';
+            return `${dept}: avg rating ${avg} (${evals.length} evaluations)`;
+          }),
+          '',
+          '── FLAGGED EVALUATIONS ──────────────────────────',
+          ...flagged.map(e =>
+            `${e.id} | ${e.evaluatorId} | ${e.department} | Rating: ${e.rating} | Predicted: ${e.predictedRating} | Dev: ${e.ratingDeviation > 0 ? '+' : ''}${e.ratingDeviation}`
+          ),
+          '',
+          '═══════════════════════════════════════════════════',
+        ];
+        const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `bias-report-${date}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      }
+
+      const navigateToXAI = (id) => {
+        setSelectedEvaluationId(id);
+        setActiveModule(6);
+      };
+
+      const renderModule = () => {
+        if (activeModule === 1) return <EvaluationForm evaluations={evaluations} setEvaluations={setEvaluations} />;
+        if (activeModule === 2) return <AnalyticsDashboard evaluations={evaluations} />;
+        if (activeModule === 3) return <MLPredictor evaluations={evaluations} navigateToXAI={navigateToXAI} />;
+        if (activeModule === 4) return <NLPAnalyzer />;
+        if (activeModule === 5) return <FairnessFramework evaluations={evaluations} />;
+        if (activeModule === 6) return <XAIView evaluations={evaluations} selectedEvaluationId={selectedEvaluationId} setSelectedEvaluationId={setSelectedEvaluationId} />;
+        return null;
+      };
+
+      return (
+        <div>
+          <TopNav evaluations={evaluations} onGenerateReport={generateReport} />
+          <Sidebar activeModule={activeModule} setActiveModule={setActiveModule} />
+          <div style={{ marginLeft: '240px', paddingTop: '56px', minHeight: '100vh' }}>
+            {renderModule()}
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
